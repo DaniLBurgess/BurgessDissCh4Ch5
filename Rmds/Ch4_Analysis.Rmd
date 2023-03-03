@@ -1,0 +1,555 @@
+---
+title: "Chapter 4 Analysis"
+author: "Danielle Burgess"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE, fig.show='hold', results='hold')
+
+library(here)
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(ggplot2) #for plots
+library(scales) #for percent()
+library(lme4) #for glmer
+library(plotrix) #for std.error()
+library(emmeans) #for lsmeans
+library(buildmer)
+library(lmerTest) #for lmer p-values
+library(pbkrtest)
+library(DescTools) #for Entropy
+
+```
+
+```{r import data}
+# import FCT data
+Ch4FCT <- read_excel(path=here("tidy_data/Ch4FCT.xlsx"))
+Ch4FCT <- Ch4FCT %>% rename(participant = player, condition = Condition)
+# import production data
+Ch4Prod <- read_excel(path=here("tidy_data/Ch4Prod.xlsx"),
+                      col_types = c("numeric", "text", "text", "text", 
+                                    "text", "text", "text", "text",
+                                    "text","numeric","numeric","text",
+                                    "numeric","text", "numeric", "numeric", "numeric"))
+Ch4Prod <- Ch4Prod %>% rename(participant = player, condition = Condition)
+Ch4Prod$phase <- factor(Ch4Prod$phase,levels=c("NounProd","AffProd","NegProd","IntProd","NegProd2"))
+# import negation data
+Ch4NegProd <- read_excel(path=here("tidy_data/Ch4NegProd.xlsx"),
+                      col_types = c("numeric", "text", "text", "text", 
+                                    "text", "text", "text", "text",
+                                    "text","numeric","numeric","text",
+                                    "numeric","text", "numeric", "numeric",
+                                    "numeric","numeric","numeric"))
+Ch4NegProd <- Ch4NegProd %>% rename(participant = player, condition = Condition)
+Ch4NegProd$phase <- factor(Ch4NegProd$phase, levels=c("NegProd","IntProd","NegProd2"))
+# import questionnaire data
+ENGPostExpQ <- read_excel(path=here("tidy_data/ENGPostExpQ.xlsx"))
+ENGPostExpQ <- subset(ENGPostExpQ, participant %in% Ch4Prod$participant)
+ENGPostExpQ <- ENGPostExpQ %>% mutate_at(c('aoa','total','use_rate','understand_rate','media_exp_rate','social_exp_rate'), as.numeric)
+
+```
+
+# Introduction 
+
+Is there a bias favoring preverbal negation in learning among English speakers in the US? Does the presence of a communicative context influence a preference for earlier negation?
+
+Participants in this study were exposed to an artificial language that had a mixture of NegV and VNeg word orders, and the ratio of these orders was manipulated depending on experimental condition. Those in the Equiprobable Condition saw equal amounts of both orders, whereas those in the Majority Preverbal Negation Condition saw 75% NegV order, and those in the Majority Postverbal Negation Condition saw 75% VNeg order.
+
+Participants were trained on the artificial language in three phases. First, they were exposed to nouns, then affirmative sentences, and finally negative sentences. Each exposure phase was followed by a comprehension test, which took the form of a 2-alternative forced choice task (abbreviated FCT here), and a production test, where participants typed descriptions of images in the artificial language. Following the negative sentence training, there were three critical production stages (recall 1, interaction, and recall 2), in which participants were asked to describe novel images withheld during the training phase in the artificial language. This file describes analysis of accuracy in each of these tests and analysis of word order preferences. 
+
+This R Markdown file contains the code used for data analysis and plotting.
+
+# Accuracy
+
+In this section I examine overall accuracy in the comprehension (FCT) and production tasks. 
+
+## FCT Accuracy
+In each FCT trial, participants were presented with two images and a description in the artificial language and were asked to choose which image matched the description. 
+
+The lower mean accuracy in the Negative Sentence phase of the experiment is primarily driven by errors in the first trial of that stage. After failing a trial in this phase participants saw the reminder 'Remember that negation refers to what did NOT happen', and overall accuracy improves if the first trial is excluded. 
+
+```{r summarize fct accuracy}
+# the interaction phase also included a forced choice task, so add interaction phase to training fct data
+Ch4Int <- Ch4Prod %>% filter(phase=="IntProd")
+shared_cols <- names(Ch4Int)[names(Ch4Int) %in% names(Ch4FCT)]
+Ch4FCT <- rbind(Ch4FCT[shared_cols],Ch4Int[shared_cols])
+
+# accuracy and standard error by phase and condition
+FCT_acc <- Ch4FCT %>%
+  group_by(condition,phase) %>%
+  summarise(mean = mean(trialSuccess),
+            se = std.error(trialSuccess))
+FCT_acc$phase <- factor(FCT_acc$phase,levels=c("NounFCT","AffFCT","NegFCT","IntProd"))
+
+# qccuracy by participant
+FCT_acc_byp <- Ch4FCT %>%
+  group_by(participant,condition,phase) %>%
+  summarise(mean = mean(trialSuccess),
+            se = std.error(trialSuccess))
+FCT_acc_byp$phase <- factor(FCT_acc_byp$phase,levels=c("NounFCT","AffFCT","NegFCT","IntProd"))
+```
+
+```{r plot fct accuracy}
+Ch4FCTAcc <- ggplot(FCT_acc_byp, aes(y=mean, x=phase)) +
+  geom_dotplot(position="dodge",binaxis="y", stackdir="center",dotsize=0.2,fill="white",alpha=0.5)+
+  geom_point(data=FCT_acc, stat="identity",size = 2)+
+  geom_errorbar(data=FCT_acc, aes(ymin=mean-se,ymax=mean+se),width=0.4)+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_discrete(labels = c('Noun','Aff','Neg','Int'))+
+  facet_grid(~condition)+
+  labs(y="Mean FCT Accuracy",x=NULL)
+Ch4FCTAcc
+ggsave(filename="Ch4FCTAcc.png",plot=Ch4FCTAcc,path=here("output"),width=6,height=4,units="in")
+```
+```{r first trial NegFCT}
+# checking the source of low accuracy in NegFCT is first trial
+trial1_negFCT <- Ch4FCT %>% filter(phase=="NegFCT") %>% group_by(participant) %>% slice(1)
+# 22% accuracy on the first trial of the NegFCT task
+trial1_negFCT_mean <- mean(trial1_negFCT$trialSuccess)
+```
+
+```{r find best fit fct accuracy model,  eval = FALSE}
+# this code chunk is currently set not to evaluate on knit to lessen computing time
+# find maximal model that will converge
+max.model <- trialSuccess ~ condition * phase + (1|participant)
+fct.m <- buildmer(max.model,data=Ch4FCT,family="binomial",buildmerControl=buildmerControl(direction='order', args=list(control=lmerControl(optimizer='bobyqa'))))
+# maximal model that will converge:
+# trialSuccess ~ condition * phase
+(max.model <- formula(fct.m@model))
+fct.m <- buildmer(max.model,data=Ch4FCT,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# trialSuccess ~ 1 + phase
+(max.model <- formula(fct.m@model))
+# the model that best fits the data includes fixed effects for phase; the fixed effects for condition did not result in a significantly better fit, indicating that the input condition was not an important factor in explaining accuracy on the forced choice task.
+```
+
+## Production Accuracy
+In this file 'strict accuracy' refers to exact matches between the participant input and target after correcting for minor typos. 'Loose accuracy' counts trials where the Levenshtein distance from the target string was 5 or less (for instance, a response where only one lexical item was swapped out for another would be classified as accurate by this measure. Refer to the data preparation file to see how accuracy and Levenshtein distance was calculated in more detail.
+
+```{r summarize production accuracy}
+# calculate mean accuracy (strict and loose) by participant
+prod_acc_byp <- Ch4Prod %>%
+  group_by(participant,condition,phase) %>%
+  summarise(acc_strict_mean = mean(acc),
+            acc_loose_mean = mean(near_acc))
+
+# calculate mean accuracy (strict and loose) and standard errors by phase and condition
+prod_acc <- Ch4Prod %>%
+  group_by(condition,phase) %>%
+  summarise(acc_strict_mean = mean(acc),
+            acc_strict_se = std.error(acc),
+            acc_loose_mean = mean(near_acc),
+            acc_loose_se = std.error(near_acc))
+
+```
+
+```{r plot strict accuracy}
+Ch4ProdStrictAcc <- ggplot(prod_acc_byp, aes(y=acc_strict_mean, x=phase)) +
+  geom_dotplot(position="dodge",binaxis="y", stackdir="center",dotsize=0.2,fill="white",alpha=0.5)+
+  geom_point(data=prod_acc, stat="identity",size = 2)+
+  geom_errorbar(data=prod_acc, aes(ymin=acc_strict_mean-acc_strict_se,ymax=acc_strict_mean+acc_strict_se),width=0.4)+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_discrete(labels = c('Noun','Aff','Recall 1','Int','Recall 2'))+
+  facet_grid(~condition)+
+  labs(y="Mean Production Accuracy (Strict)",x=NULL)
+Ch4ProdStrictAcc 
+ggsave(filename="Ch4ProdStrictAcc.png",plot=Ch4ProdStrictAcc ,path=here("output"),width=6,height=4,units="in")
+```
+
+```{r plot loose accuracy}
+Ch4ProdLooseAcc <- ggplot(prod_acc_byp, aes(y=acc_loose_mean, x=phase)) +
+  geom_dotplot(position="dodge",binaxis="y", stackdir="center",dotsize=0.2,fill="white",alpha=0.5)+
+  geom_point(data=prod_acc, stat="identity",size = 2)+
+  geom_errorbar(data=prod_acc, aes(ymin=acc_loose_mean-acc_loose_se,ymax=acc_loose_mean+acc_loose_se),width=0.4)+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_discrete(labels = c('Noun','Aff','Recall 1','Int','Recall 2'))+
+  facet_grid(~condition)+
+  labs(y="Mean Production Accuracy (Loose)",x=NULL)
+Ch4ProdLooseAcc 
+ggsave(filename="Ch4ProdLooseAcc.png",plot=Ch4ProdLooseAcc ,path=here("output"),width=6,height=4,units="in")
+```
+
+## Excluded Critical Trials
+```{r excluded critical trials}
+cr_excluded  <- sum(is.na(Ch4NegProd$NegVorder))
+cr_total <- length(Ch4NegProd$NegVorder)
+cr_percent <- percent(cr_excluded/cr_total, accuracy=0.1) 
+```
+
+The total number of excluded critical (negative sentence) production trials across the experiment is `r cr_excluded` (`r cr_percent` out of `r cr_total` trials).
+
+# Word Order
+
+This graph shows the proportion of NegV order within each condition and production phase. 
+
+```{r summarize NegV order}
+# calculate proportion NegV order by participant
+NegV_byp <- Ch4NegProd %>%
+  drop_na(NegVorder) %>%
+  group_by(condition,participant,phase,group) %>%
+  summarise(mean_negV = mean(NegVorder))
+
+# summary statistics by condition and phase
+NegV_summary <- NegV_byp %>%
+  group_by(condition,phase) %>%
+  summarise(mean = mean(mean_negV),
+            se = std.error(mean_negV))
+NegV_summary$input_prop <- case_when(
+  NegV_summary$condition=="Majority VNeg" ~ 0.25,
+  NegV_summary$condition=="Majority NegV" ~ 0.75,
+  NegV_summary$condition=="Equiprobable" ~ 0.50)
+```
+
+```{r plot NegV order}
+Ch4NegVPlot <- ggplot(data=NegV_byp, aes(x=phase, fill=phase))+
+  geom_violin(position=position_dodge(),aes(y=mean_negV),show.legend = FALSE, alpha=0.5)+
+  geom_errorbar(data=NegV_summary, aes(ymin=input_prop,ymax=input_prop),linetype="dashed", size=.4)+
+  geom_errorbar(data=NegV_summary, position=position_nudge(0.5),aes(y=mean, ymin=mean-se,ymax=mean+se),width=0.1)+
+  geom_dotplot(position="dodge", aes(y=mean_negV), dotsize=0.3, binaxis="y", stackdir="center", alpha=0.5,show.legend = FALSE)+
+  geom_dotplot(data=NegV_summary, aes(y=mean), dotsize=0.8, alpha=0.5, binaxis="y", stackdir="center", position_nudge(x=0.5),show.legend = FALSE)+
+  facet_grid(~condition)+
+  scale_x_discrete(labels=c("Recall 1","Int","Recall 2"))+
+  labs(x = "Production Phase", y = "Proportion NegV Order")
+Ch4NegVPlot
+
+ggsave(filename="Ch4NegVPlot.png",plot=Ch4NegVPlot,path=here("output"),width=6,height=4,units="in")
+```
+
+## Effect of Condition and Phase on NegV Order Use
+In this section, I use mixed effects logistic regression modeling to answer the following questions:
+
+  1. Are participants in the Equiprobable condition producing NegV order significantly greater than chance? 
+  
+  * **Yes**. A model including NegV Order as the binary dependent variable, fixed effects of Condition (ref = Equiprobable) and Phase (ref = Recall 1), and their interaction, and random effects of participant nested in group, shows a significant positive intercept. This indicates that the choice of NegV order in the Equiprobable condition was significantly greater than chance in the Recall 1 phase of the Equiprobable Condition.
+  
+```{r buildmer negv, eval = FALSE}
+# for this model Equiprobable is the ref level for Condition, Recall 1 is the ref level for Phase
+
+#use buildmer to determine the maximal model that will converge
+max.model <- NegVorder~condition*phase+(1|trialId)+(1|group/participant)
+m <- buildmer(max.model,data=Ch4NegProd,family="binomial",buildmerControl=buildmerControl(direction='order',args=list(control=lmerControl(optimizer='bobyqa'))))
+#buildmer suggests that the maximal model that will converge includes fixed effects for condition, phase, and their interaction, and random intercepts of trialId, group, and player nested in group
+(max.model <- formula(m@model))
+
+m <- buildmer(max.model,data=Ch4NegProd,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# NegVorder~condition*phase+(1|group:participant)
+(max.model <- formula(m@model))
+```
+
+```{r negVorder model}
+m.negvorder <- glmer(NegVorder~condition*phase+(1|group:participant),data=Ch4NegProd,family="binomial",control=glmerControl(optimizer="bobyqa"))
+summary(m.negvorder)
+```
+
+  2. Do participants increase use of NegV order in the Interaction phase compared to the Recall 1 phase? 
+  
+  * Pairwise comparisons were conducted on the previously described model with Tukey method p-value adjustment using the emmeans package. These comparisons revealed that within each condition, the only significant differences in use of the NegV order between Production Stages were within the Majority NegV Condition; within this condition, there was significantly more NegV use in the Interaction Stage than the Recall 1 stage, and NegV use was also significantly greater in Recall 2 compared to Recall 1 indicating a lasting effect of interaction.
+
+```{r pairwise comparisons}
+negv_phase_pairwise <- lsmeans(m.negvorder, ~phase | condition)
+pairs(negv_phase_pairwise)
+```
+
+## Effect of Condition and Phase on Majority Order Use
+
+  3. Are participants in the Majority NegV condition more likely to boost the majority order (NegV) than participants in the Majority VNeg condition?
+
+  * **Yes**. I ran a mixed effects logistic regression model including Majority Order as the binary dependent variable, fixed effects of Condition (Helmert coded to test Majority VNeg vs Majority NegV, Equiprobable vs. combined mean of other two) and Phase (Helmert coded to test Interaction vs Recall 1, Recall 2 vs. combined mean of other two), and their interaction, and random effects of participant nested in group. Results revealed that the use of the majority order was significantly lower in the Majority VNeg Condition compared to the Majority NegV Condition, and that the majority word order was boosted more in the Interaction Phase than the Recall 1 Phase. The model also revealed significant interaction terms indicating that boosting of the majority order in the Interaction Stage compared to Recall 1 was signfiicantly smaller in the Majority VNeg Condition compared to the Majority NegV Condition.
+
+```{r set levels}
+
+# relevel condition so we get appropriate contrasts for Helmert Coding 
+Ch4NegProd$condition <- factor(Ch4NegProd$condition,levels=c("Majority NegV","Majority VNeg","Equiprobable"))
+
+contrasts(Ch4NegProd$condition) <- contr.helmert(3)
+colnames(contrasts(Ch4NegProd$condition)) <- c("VNvNV", "EvVNNV")
+contrasts(Ch4NegProd$phase) <- contr.helmert(3)
+colnames(contrasts(Ch4NegProd$phase)) <- c("IvR1", "R2vIR1")
+```
+
+```{r buildmer majority order, eval = FALSE}
+#use buildmer to determine the maximal model that will converge
+max.model <- majorityOrder~condition*phase+(1|trialId)+(1|group/participant)
+m <- buildmer(max.model,data=Ch4NegProd,family="binomial",buildmerControl=buildmerControl(direction='order',args=list(control=lmerControl(optimizer='bobyqa'))))
+#buildmer suggests that the maximal model that will converge includes fixed effects for condition, phase, and their interaction, and random intercepts of trialId, group, and player nested in group
+(max.model <- formula(m@model))
+
+m <- buildmer(max.model,data=Ch4NegProd,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# majorityOrder~condition*phase+(1|group:participant)
+(max.model <- formula(m@model))
+```
+
+```{r majority order model}
+m.majorityorder <- glmer(majorityOrder~condition*phase+(1|group:participant),data=Ch4NegProd,family="binomial",control=glmerControl(optimizer="bobyqa"))
+summary(m.majorityorder)
+```
+
+# Behavior Within Dyads
+
+```{r plot NegV productions within pairs}
+
+#in order to make a nice looking graph, recode all the pairs separately for each condition
+
+NegV_byp.equi <- subset(NegV_byp,condition=="Equiprobable")
+NegV_byp.equi$DummyGroup <- as.factor(NegV_byp.equi$group)
+levels(NegV_byp.equi$DummyGroup) <- 1:length(levels(NegV_byp.equi$DummyGroup))
+
+NegV_byp.negV <- subset(NegV_byp,condition=="Majority NegV")
+NegV_byp.negV$DummyGroup <- as.factor(NegV_byp.negV$group)
+levels(NegV_byp.negV$DummyGroup) <- 1:length(levels(NegV_byp.negV$DummyGroup))
+
+NegV_byp.Vneg <- subset(NegV_byp,condition=="Majority VNeg")
+NegV_byp.Vneg$DummyGroup <- as.factor(NegV_byp.Vneg$group)
+levels(NegV_byp.Vneg$DummyGroup) <- 1:length(levels(NegV_byp.Vneg$DummyGroup))
+
+#recombine
+NegV_byp.dummygroup <- rbind(NegV_byp.equi,NegV_byp.negV,NegV_byp.Vneg)
+remove(NegV_byp.equi,NegV_byp.negV,NegV_byp.Vneg)
+NegV_byp.dummygroup <- na.omit(NegV_byp.dummygroup)
+NegV_byp.dummygroup$input_prop <- case_when(
+  NegV_byp.dummygroup$condition=="Majority VNeg" ~ 0.25,
+  NegV_byp.dummygroup$condition=="Majority NegV" ~ 0.75,
+  NegV_byp.dummygroup$condition=="Equiprobable" ~ 0.50)
+
+Ch4PlayerPairsPlot <- ggplot(NegV_byp.dummygroup,  aes(x=phase, y=mean_negV))+
+  theme_bw()+
+  geom_line(stat="identity",aes(group=participant),color="black")+
+  geom_errorbar(aes(ymin=input_prop,ymax=input_prop),linetype="dashed", size=.2, alpha=0.3)+
+  facet_grid(DummyGroup ~ condition)+
+  theme(legend.position="none")+
+  scale_x_discrete(labels=c("Recall 1","Int","Recall 2"))+
+  scale_y_continuous(breaks=seq(0,1,1/4),labels=c("0",".25",".50",".75","1"))+
+  labs(x = "Production Phase", y = "Proportion NegV Order")
+Ch4PlayerPairsPlot
+
+ggsave(filename="Ch4PlayerPairsPlot.png",plot=Ch4PlayerPairsPlot,path=here("output"),width=6,height=6,units="in")
+```
+
+## Priming 
+
+Is the order of the current negative trial influenced by the order of the previous negative trial?
+
+**Yes**
+
+```{r add prevTrial column}
+# reorder data frame so that pairs are in trial order in interaction
+Ch4Int <- Ch4NegProd %>% filter(phase=="IntProd")
+Ch4Int <- Ch4Int[order(Ch4Int[,c("group")],Ch4Int[,c("interactivePeriod")]),]
+Ch4Int$prevTrial <- NA
+# add prevTrial column which holds 1 if previous trial was NegV order, 0 if not, NA if first trial
+for (i in 1:length(Ch4Int$interactivePeriod)) {
+  if (length(Ch4Int$group[i-1]==1L) && Ch4Int$group[i] == Ch4Int$group[i-1]) {
+    Ch4Int$prevTrial[i] <- Ch4Int$NegVorder[i-1]
+  }
+  else {
+    Ch4Int$prevTrial[i] <- NA
+  }
+}
+Ch4Int$prevTrial <- factor(Ch4Int$prevTrial)
+```
+
+```{r priming figure}
+
+# summary statistics by condition and previous trial
+priming_summary <- Ch4Int[!is.na(Ch4Int$prevTrial),] %>%
+  group_by(condition,prevTrial) %>%
+  summarise(mean = mean(NegVorder,na.rm = TRUE),
+            se = std.error(NegVorder,na.rm = TRUE))
+priming_summary$input_prop <- case_when(
+  priming_summary$condition=="Majority VNeg" ~ 0.25,
+  priming_summary$condition=="Majority NegV" ~ 0.75,
+  priming_summary$condition=="Equiprobable" ~ 0.50)
+
+priming_summary$condition <- factor(priming_summary$condition,levels=c("Equiprobable","Majority NegV","Majority VNeg"))
+
+Ch4PrimingPlot <- ggplot(data=priming_summary, aes(x=prevTrial,y=mean))+
+  geom_bar(stat="identity", aes(fill=prevTrial),show.legend = FALSE)+
+  geom_errorbar(data=priming_summary, aes(ymin=input_prop,ymax=input_prop),linetype="dashed", size=.4)+
+  geom_errorbar(data=priming_summary, aes(y=mean, ymin=mean-se,ymax=mean+se),width=0.1)+
+  facet_grid(~condition)+
+  scale_x_discrete(labels=c("VNeg","NegV"))+
+  labs(x = "Order of Previous Negative Trial", y = "Proportion NegV Order")
+Ch4PrimingPlot
+
+ggsave(filename="Ch4PrimingPlot.png",plot=Ch4PrimingPlot,path=here("output"),width=6,height=4,units="in")
+
+```
+
+
+```{r priming model}
+
+contrasts(Ch4Int$prevTrial) <- contr.helmert(2)
+
+m.priming <- glmer(NegVorder~condition*prevTrial+(1|group/participant),data=Ch4Int,family="binomial",control=glmerControl(optimizer="bobyqa"))
+summary(m.priming)
+```
+
+## Asymmetric Accomodation Analysis
+
+To measure whether asymmetric accomodation occurred during interaction, we can calculate the entropy of the system produced by each participant in each phase. Entropy measures how variable a participant’s productions are: entropy of 0 corresponds to a participant who consistently uses a single word order, and entropy is at a maximum (entropy = 1) when both word orders are used in equal proportion.
+
+To test for asymmetric accomodation, we check whether participants who had categorical partners were more likely to adopt a more regular system during interaction than participants who had variable partners.
+
+```{r asymmetric accomodation graph}
+
+# calculate entropy for each participant in each phase
+for (i in 1:length(NegV_byp$mean_negV)) {
+ NegV_byp$entropy[i] <- Entropy(c(NegV_byp$mean_negV[i],1-NegV_byp$mean_negV[i]))
+}
+NegV_byp <- NegV_byp[!is.na(NegV_byp$group),]
+#reorder df for next step
+NegV_byp <- NegV_byp[order(NegV_byp$group,NegV_byp$participant,NegV_byp$phase),]
+NegV_byp$cat_partner <- NA
+NegV_byp$cat <- NA
+# code cat_partner: for each participant, mark Y when their partner was categorical during the interaction phase (i.e., used one order 100% of the time) and N otherwise
+for (i in seq(from = 5, to = length(NegV_byp$entropy), by = 6)) {
+  if (NegV_byp$entropy[i] == 0) {
+    NegV_byp$cat_partner[(i-4):(i-2)] <- "Y"
+  }
+  else {
+    NegV_byp$cat_partner[(i-4):(i-2)] <- "N"
+  }
+  if (NegV_byp$entropy[i-3] == 0) {
+    NegV_byp$cat_partner[(i-1):(i+1)] <- "Y"
+  }
+  else {
+    NegV_byp$cat_partner[(i-1):(i+1)] <- "N"
+  }
+}
+# code cat: for each participant, mark Y if they were categorical in recall 1 and N otherwise
+for (i in seq(from = 4, to = length(NegV_byp$entropy), by = 6)) {
+  if (NegV_byp$entropy[i] == 0) {
+    NegV_byp$cat[(i):(i+2)] <- "Y"
+  }
+  else {
+    NegV_byp$cat[(i):(i+2)] <- "N"
+  }
+  if (NegV_byp$entropy[i-3] == 0) {
+    NegV_byp$cat[(i-3):(i-1)] <- "Y"
+  }
+  else {
+    NegV_byp$cat[(i-3):(i-1)] <- "N"
+  }
+}
+
+Ch4EntropyPlot <- ggplot(NegV_byp,aes(x=phase,y=entropy))+
+  theme_bw()+
+  geom_line(stat="identity",aes(group=participant,color=participant),show.legend = FALSE, alpha=0.5)+
+  facet_grid(cat_partner ~ condition)+
+  scale_x_discrete(labels=c("Recall 1","Int","Recall 2"))+
+  labs(x = "Production Phase", y = "Entropy")
+  
+Ch4EntropyPlot
+```
+
+Are variable users who interact with a categorical partner more likely to shift to a more regular system than those who interact with a variable partner?
+```{r analyse asymmetric accomodation}
+# relevel condition so we get appropriate contrasts
+NegV_byp$condition <- factor(NegV_byp$condition,levels=c("Majority NegV","Majority VNeg","Equiprobable"))
+NegV_byp$cat_partner <- factor(NegV_byp$cat_partner,levels=c("N","Y"))
+NegV_byp$cat <- factor(NegV_byp$cat,levels=c("N","Y"))
+
+contrasts(NegV_byp$condition) <- contr.treatment(3)
+colnames(contrasts(NegV_byp$condition)) <- c("VNvNV", "EvNV")
+contrasts(NegV_byp$phase) <- contr.treatment(3)
+colnames(contrasts(NegV_byp$phase)) <- c("IvR1", "R2vR1")
+
+m.asymm2_vR1 <- lmer(entropy~condition+phase*cat_partner+(1|group),data=subset(NegV_byp,cat=="N"))
+summary(m.asymm2_vR1)
+```
+
+```{r combined NegV order graph}
+# calculate mean negVorder use, minimum entropy, and mean entropy for each dyad
+combined_system <- NegV_byp[!is.na(NegV_byp$group),] %>%
+  group_by(condition,phase,group) %>%
+  summarise(combined_negV = mean(mean_negV))
+
+
+combined_system$input_prop <- case_when(
+  combined_system$condition=="Majority VNeg" ~ 0.25,
+  combined_system$condition=="Majority NegV" ~ 0.75,
+  combined_system$condition=="Equiprobable" ~ 0.50)
+combined_system$condition <- factor(combined_system$condition,levels=c("Equiprobable","Majority NegV","Majority VNeg"))
+
+
+Ch4CombinedNegVPlot <- ggplot(combined_system,aes(x=phase,y=combined_negV))+
+  theme_bw()+
+  geom_errorbar(data=combined_system, aes(ymin=input_prop,ymax=input_prop),linetype="dashed",linewidth=0.3)+
+  geom_line(stat="identity",aes(group=group,color=group),show.legend = FALSE)+
+  facet_grid(~ condition)+
+  scale_x_discrete(labels=c("Recall 1","Int","Recall 2"))+
+  labs(x = "Production Phase", y = "Average Proportion NegV Order Use Within Dyad")
+Ch4CombinedNegVPlot
+
+ggsave(filename="Ch4CombinedNegVPlot.png",plot=Ch4CombinedNegVPlot,path=here("output"),width=6,height=4,units="in")
+```
+
+
+## Alignment
+```{r calculate within-pair differences}
+
+#calculate within-pair difference in proportion NegV order use at each phase
+NegV_pair.diff <- aggregate(
+  list(difference=NegV_byp$mean_negV),
+  list(group=NegV_byp$group, phase=NegV_byp$phase, condition=NegV_byp$condition), 
+  FUN=diff)
+NegV_pair.diff$difference <- abs(NegV_pair.diff$difference)
+  
+Ch4PairDiffPlot <- ggplot(data=NegV_pair.diff,aes(x=phase,y=difference,fill=phase))+
+  geom_boxplot(position="dodge",show.legend = FALSE, alpha=0.5)+
+  labs(title=NULL,x = "Production Phase", y="Within-Pair Difference in Proportion NegV Use")+
+  facet_grid(~ condition)+
+  scale_x_discrete(labels=c("Recall 1","Int","Recall 2"))
+
+Ch4PairDiffPlot
+ggsave(filename="Ch4PairDiffPlot.png",plot=Ch4PairDiffPlot,path=here("output"),width=6,height=4,units="in")
+```
+
+```{r analyze within-pair differences}
+# relevel condition so we get appropriate contrasts for Helmert Coding 
+NegV_pair.diff$condition <- factor(NegV_pair.diff$condition,levels=c("Majority NegV","Majority VNeg","Equiprobable"))
+
+contrasts(NegV_pair.diff$condition) <- contr.helmert(3)
+colnames(contrasts(NegV_pair.diff$condition)) <- c("VNvNV", "EvVNNV")
+contrasts(NegV_pair.diff$phase) <- contr.helmert(3)
+colnames(contrasts(NegV_pair.diff$phase)) <- c("IvR1", "R2vIR1")
+
+m.pair_diff <- lmer(difference~condition*phase+(1|group),data=NegV_pair.diff)
+summary(m.pair_diff)
+```
+
+# Language Background
+
+Besides English, the languages that participants most frequently identified having used or studied were Spanish (n=33),  French (n=17), German (n=10), and Mandarin Chinese (n=8).
+
+```{r language background summary statistics}
+
+# combine Mandarin, Mandarin Chinese, and Chinese
+ENGPostExpQ$language <- gsub("Mandarin Chinese", "Chinese", ENGPostExpQ$language)
+ENGPostExpQ$language <- gsub("Mandarin", "Chinese", ENGPostExpQ$language)
+
+ENGLangExp <- ENGPostExpQ %>% 
+  group_by(language) %>% 
+  summarise(count = n(),
+            mean_aoa = mean(aoa, na.rm=TRUE),
+            se_aoa = std.error(aoa,na.rm=TRUE),
+            mean_total = mean(total, na.rm=TRUE),
+            mean_use = mean(use_rate, na.rm=TRUE),
+            mean_understand = mean(understand_rate, na.rm=TRUE),
+            mean_media_exp = mean(media_exp_rate, na.rm=TRUE),
+            mean_social_exp = mean(social_exp_rate, na.rm=TRUE))
+
+```
+

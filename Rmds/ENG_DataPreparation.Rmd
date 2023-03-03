@@ -1,0 +1,351 @@
+---
+title: "ENG_DataPreparation"
+author: "Danielle Burgess"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+---
+
+```{r, message=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE, fig.show='hold', results='hold')
+
+# Setup -----
+library(here) #for file referencing with here()
+library(dplyr)
+library(writexl) 
+library(readxl)
+library(tidyr) 
+library(stringdist)
+
+# Local functions -----
+
+# remove trailing/leading whitespace
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+
+verbs <- c("patu","toma","umi","sal")
+nouns <- c("mook","falit","ludin","sido","daki","pepo")
+neg <- c("pik")
+dictionary <- c(verbs,nouns,neg)
+
+correct.typos <- function(response) {
+  if (is.na(response)) {
+    NA
+  }
+  else {
+    words <- strsplit(response, " ")[[1]] #split the response around the spaces
+    corrected <- ""
+    for (w in words) {
+      closest_legal_w <- find.closest.match(trim(w),dictionary)
+      corrected <- paste(corrected, closest_legal_w,sep=" ")
+    }
+    trim(corrected)
+  }
+}
+
+# this function returns the closest match in the dictionary for a word
+# only if there is 1 closest match that is only different by 1 character
+# otherwise it returns the word
+find.closest.match <- function(word,dictionary) {
+  distance <- c()
+  for (d in dictionary) {
+    distance <- append(distance,stringdist(word,d))
+    if (min(distance) <= 1 & length(which(distance == min(distance)) <= 1)) {
+      closest_match <- dictionary[which.min(distance)]
+    }
+    else {
+      closest_match <- word
+    }
+  }
+  closest_match
+}
+
+#calculate levenshtein string edit distance
+calculate.distance <- function(response, target, NegV, VNeg) {
+  distance = c()
+  if (is.na(response)) {
+    if (is.na(target)) {
+      distance <- nchar(NegV)
+    }
+    else {
+      distance <- nchar(target)
+    }
+  }
+  else {
+    if (is.na(target)) {
+      distance <- min(stringdist(response, NegV, method = "lv"),
+                      stringdist(response, VNeg, method = "lv"))
+    }
+    else {
+      distance <- stringdist(response, target, method = "lv")
+    }
+  }
+  distance
+}
+
+is.near.accurate <- function(distance, phase) {
+  if (is.na(distance)) {
+    NA
+  }
+  else {
+    if (phase == "NounProd") {
+      if (distance <= 1) 1 else 0
+    }
+    else {
+      if (distance <= 5) 1 else 0
+    }
+  }
+}
+
+id.neg.order <- function(response, distance, NegVSentence, VNegSentence) {
+  if (is.na(response) | distance > 5) {
+    NA
+  }
+  else {
+    NegVdistance = stringdist(response,NegVSentence)
+    VNegdistance = stringdist(response,VNegSentence)
+    if (NegVdistance < VNegdistance) {
+      1
+    }
+    else if (NegVdistance > VNegdistance) {
+      0
+    }
+    else {
+      NA
+    }
+  }
+}
+```
+
+# Introduction
+This document contains all the code used for tidying the data and excluding participant data based on accuracy and completion. 
+
+# Import Raw Data
+
+```{r import raw data}
+file_names <- list.files(path=here::here("ENG_raw_data"), pattern = "*.xlsx",full.names = TRUE)
+
+#core_df gets the 'core' sheet from all of the data files
+core_df <- do.call("rbind", lapply(file_names, read_excel))
+#filtered for players who reached the exit screen
+player_df <- core_df %>% drop_na('onPage') %>% filter(grepl('Exit Screen',onPage)) %>%
+  unite('player', c(playerNr,Batch)) %>% dplyr::select(player,groupNr,groupAborted)
+
+#session_df contains the 'session' sheet from all the data files
+session_df <- do.call("rbind", lapply(file_names, read_excel, sheet=5))
+ID_df <- session_df %>% unite('player', c(playerNr,Batch),remove=FALSE) %>% 
+  unite('randomID', c(randomid,Batch)) %>% dplyr::select(player,randomID)
+
+#decision_df contains the 'decisions' sheet from all the data files
+decision_df <- do.call("rbind", lapply(file_names, read_excel, sheet=2))
+data <- decision_df %>% unite('player', c(playerNr,Batch),remove=FALSE) %>% 
+  unite(group, c(groupNr,Batch)) %>% filter(player %in% player_df$player)
+
+#remove data frames we don't need anymore
+remove(core_df,session_df,decision_df)
+```
+
+## Correct Typos
+Next, we convert responses on the decision sheet to correct common typos which we do not want to consider as inaccurate responses. Extra punctuation (the language didn't contain punctuation at the end of sentences, but some participants included it) was removed, and vocabulary errors that were 1 Levenshtein distance removed from the language vocabulary were corrected.
+```{r correct typos}
+#convert capital letters in responses to lower case
+data$response <- tolower(data$response)
+#remove periods and apostrophes
+data$response <- data$response %>% gsub("\\.|'","",.)
+
+data$response <- mapply(correct.typos, response = data$response)
+```
+
+# Tidy Tasks and Phases for Analysis
+After loading data and correcting typos, separate data frames are created for different tasks and phases, filtered only for players who reached the exit screen:
+  * d_FCT = forced choice task results
+  * d_int = interaction task results
+  * d_prod = pre-interaction solo production task results
+  * d_prod2 = post-interaction solo production task results
+  
+```{r separate phases}
+
+#create different data frames for each trial type & eliminate cols with only NA
+d_FCT <- data %>% filter(grepl('FCT',stageId)) %>% select_if(~!all(is.na(.))) %>% 
+  dplyr::select(player,trialId,stageId,trialSuccess,Condition)
+d_prod <- data %>% filter(grepl('production',stageId)) %>% select_if(~!all(is.na(.))) %>%
+  dplyr::select(player,trialId,stageId,response,Condition)
+d_int <- data %>% filter(grepl('interactive',stageId)) %>% select_if(~!all(is.na(.))) %>%
+  dplyr::select(player,group,trialId,trialSuccess,response,displayMessage,Condition,interactivePeriod)
+d_prod2 <- data %>% filter(grepl('negProduction',stageId)) %>% select_if(~!all(is.na(.))) %>%
+  dplyr::select(player,group,trialId,stageId,response,Condition)
+```
+
+## Add Phase Labels
+Add labels to identify FCT and production trials in each of the pre-interaction training phases (Noun, Affirmative Sentences, Negative Sentences) and production phases
+
+```{r add phase labels}
+#label pre-interaction FCT trials
+d_FCT$phase <- NA
+noun_FCT <- d_FCT %>% group_by(player) %>% slice(n=1:12)
+noun_FCT$phase <- "NounFCT"
+aff_FCT <- d_FCT %>% group_by(player) %>% slice(n=13:24)
+aff_FCT$phase <- "AffFCT"
+neg_FCT <- d_FCT %>% group_by(player) %>% slice(n=25:36)
+neg_FCT$phase <- "NegFCT"
+
+#label pre-interaction production trials
+d_prod$phase <- NA
+noun_prod <- d_prod %>% group_by(player) %>% slice(n=1:12)
+noun_prod$phase <- "NounProd"
+aff_prod <- d_prod %>% group_by(player) %>% slice(n=13:24)
+aff_prod$phase <- "AffProd"
+neg_prod <- d_prod %>% group_by(player) %>% slice(n=25:60)
+neg_prod$phase <- "NegProd"
+
+#label interaction production trials
+d_int$phase <- "IntProd"
+d_prod2$phase <- "NegProd2"
+
+```
+
+## Join With Correct Answers
+Join production stimuli with results data so accuracy can be determined
+
+```{r join production stimuli with results data so accuracy can be determined}
+
+# test_n = noun stimuli seen in first test phase
+test_n <- read_excel(here("ENG_stimuli/NounTest.xlsx")) %>% dplyr::select(Text)
+test_n$trialId <-  0:(nrow(test_n)-1)
+# test_aff = affirmative sentence stimuli seen in second test phase
+test_aff <- read_excel(here("ENG_stimuli/AffTest.xlsx")) %>% dplyr::select(Text)
+test_aff$trialId <-  0:(nrow(test_aff)-1)
+# test_neg = negative sentence stimuli seen in third test phase
+test_neg <- read_excel(here("ENG_stimuli/NegTest.xlsx")) %>% dplyr::select(NegVSentence,VNegSentence,NegTF)
+test_neg$trialId <-  0:(nrow(test_neg)-1)
+# test_prod2 = negative sentence stimuli seen in interaction and post-interaction test phase
+test_prod2 <- read_excel(here("ENG_stimuli/DirectorMatcher24.xlsx")) %>%
+  dplyr::select(NegVSentence,VNegSentence,NegTF)
+test_prod2$trialId <-  0:(nrow(test_prod2)-1)
+
+noun_prod <- merge(noun_prod,test_n,by="trialId")
+aff_prod <- merge(aff_prod,test_aff,by="trialId")
+neg_prod <- merge(neg_prod,test_neg,by="trialId")
+d_prod2 <- merge(d_prod2,test_prod2,by="trialId")
+d_int <- merge(d_int,test_prod2,by="trialId")
+
+#the trialIds for the prod2 and int stages produced by the software don't match the items in the first prod stage
+#we need to renumber them so that the trialId is consistent with item across stages
+d_prod2$trialId <- factor(d_prod2$trialId,labels=c(2,3,4,5,6,7,10,11,12,13,14,15,19,20,21,22,25,26,27,29,30,32,33,35))
+d_prod2$trialId <- as.numeric(paste(d_prod2$trialId))
+d_int$trialId <- factor(d_int$trialId,labels=c(2,3,4,5,6,7,10,11,12,13,14,15,19,20,21,22,25,26,27,29,30,32,33,35))
+d_int$trialId <- as.numeric(paste(d_int$trialId))
+
+# remerge the FCT data from all training phases
+d_FCT <- rbind(noun_FCT,aff_FCT,neg_FCT)
+
+# remerge the production data from noun, affirmative, recall 1, interaction, and recall 2 phases
+d_prod <- bind_rows(noun_prod,aff_prod,neg_prod)
+all_prod <- bind_rows(d_prod,d_int,d_prod2)
+all_prod$phase <- as.factor(all_prod$phase)
+```
+
+## Add Group
+
+```{r}
+# replace group column so that groupIDs are labeled for pre-interaction production phase
+groups_df <- all_prod[,c("player","group")] %>% distinct() %>% drop_na(group)
+all_prod = subset(all_prod, select = -c(group))
+all_prod <- left_join(all_prod,groups_df,by="player")
+```
+
+
+## Calculate Production Accuracy
+
+For the purposes of comparison with the JPN group, I calculated accuracy and near-accuracy measures in the pre-interaction production phase. For near-accuracy, responses were coded as 1 if the Levenshtein distance from the response and the target string was 5 or less, for full sentences. For example, a response where only one lexical item was swapped out for another would be classified as near-accurate.
+
+```{r calculate production accuracy }
+#calculate production accuracy (strict)
+all_prod <- all_prod %>%
+  mutate(acc = case_when(
+    all_prod$response == all_prod$Text ~ 1,
+    all_prod$response == all_prod$NegVSentence ~ 1,
+    all_prod$response == all_prod$VNegSentence ~ 1))
+#label blank responses as inaccurate
+all_prod$acc[is.na(all_prod$acc)] = 0
+
+#calculate production near-accuracy
+all_prod$distance <- mapply(calculate.distance,
+                           response = all_prod$response,
+                           target = all_prod$Text,
+                           NegV = all_prod$NegVSentence,
+                           VNeg = all_prod$VNegSentence)
+all_prod$near_acc <- mapply(is.near.accurate,
+                           distance = all_prod$distance,
+                           phase = all_prod$phase)
+all_prod$near_acc[is.na(all_prod$near_acc)] = 0
+
+# check by participant accuracy
+prod_nearacc_byp <- all_prod %>%
+  group_by(player,Condition,phase) %>%
+  summarise(mean_acc = mean(acc, na.rm = TRUE),
+            mean_neaacc = mean(near_acc, na.rm = TRUE))
+```
+
+# Calculate Word Order
+
+```{r calculate negative word order}
+AllNegProd <- all_prod %>% filter(NegTF==1)
+
+AllNegProd$NegVorder <- mapply(id.neg.order,
+                               response = AllNegProd$response,
+                               distance = AllNegProd$distance,
+                               NegVSentence = AllNegProd$NegVSentence,
+                               VNegSentence = AllNegProd$VNegSentence)
+
+AllNegProd$majorityOrder <- ifelse(AllNegProd$Condition == "Majority VNeg",
+                              ifelse(is.na(AllNegProd$NegVorder), NA,
+                                ifelse(AllNegProd$NegVorder == 1, 0, 1)),
+                              AllNegProd$NegVorder)
+```
+
+
+# Export Tidy Data
+
+The tidied data is saved in the tidy_data folder in three files: FCT data is saved as Ch4FCT, production data is saved as Ch4Prod, and negative sentence production trials are also saved separately as Ch4NegProd. 
+
+```{r export}
+write_xlsx(d_FCT,path=here("tidy_data/Ch4FCT.xlsx")) #all FCT data
+write_xlsx(all_prod,path=here("tidy_data/Ch4Prod.xlsx")) # all production data
+write_xlsx(AllNegProd,path=here("tidy_data/Ch4NegProd.xlsx")) # only negative sentence production data
+```
+
+
+## JPN Comparison Exclusions
+
+For the purposes of comparison with Experiment 3 (which includes Japanese-speaking participants), participants with <75% near-accuracy in the pre-interaction production phase were excluded from further analysis. 
+
+```{r exclusions}
+# participants with <75% near-accuracy:
+# 1. 2_VNeg2 (VNeg, 55%), 2. 3_NegV2 (NegV, 67%), 3. 4_NegV6 (NegV, 58%) 
+
+ENGFCT <- d_FCT[!(d_FCT$player %in% c("2_VNeg2",
+                                      "3_NegV2",
+                                      "4_NegV6")),]
+
+# filter out interaction and recall 2 phases which aren't relevant to comparison with Exp 3
+ENGProd <- all_prod[(all_prod$phase %in% c("NounProd","AffProd","NegProd")),]
+ENGProd <- ENGProd[!(ENGProd$player %in% c("2_VNeg2",
+                                        "3_NegV2",
+                                        "4_NegV6")),]
+
+ENGNegProd <- AllNegProd
+ENGNegProd <- ENGNegProd[!(ENGNegProd$player %in% c("2_VNeg2",
+                                        "3_NegV2",
+                                        "4_NegV6")),]
+
+write_xlsx(ENGFCT,path=here("tidy_data/ENGFCT.xlsx"))
+write_xlsx(ENGProd,path=here("tidy_data/ENGProd.xlsx"))
+write_xlsx(ENGNegProd,path=here("tidy_data/ENGNegProd.xlsx"))
+```
+

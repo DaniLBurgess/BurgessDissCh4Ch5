@@ -1,0 +1,323 @@
+---
+title: "JPN_DataPreparation"
+author: "Danielle Burgess"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, message=FALSE}
+# Setup -----
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE, fig.show='hold', results='hold')
+
+library(here) #for file referencing with here()
+library(dplyr)
+library(writexl) 
+library(readxl)
+library(tidyr) 
+library(stringdist)
+
+# Local functions -----
+
+# remove trailing/leading whitespace
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+
+verbs <- c("セル","トマ","パツ","プミ")
+nouns <- c("ドキ","ホレト","ルピン","ムク","ピポ","シド")
+neg <- c("ピク")
+dictionary <- c(verbs,nouns,neg)
+
+# this function takes a response and returns the closest match for each word using the find.closest.match function below
+correct.typos <- function(response) {
+  if (is.na(response)) {
+    NA
+  }
+  else {
+    words <- strsplit(response, "　")[[1]] #split the response around the spaces
+    corrected <- ""
+    for (w in words) {
+      closest_legal_w <- find.closest.match(trim(w),dictionary)
+      corrected <- paste(corrected, closest_legal_w,sep="　")
+    }
+    trim(corrected)
+  }
+}
+
+# this function returns the closest match in the dictionary for a word
+# only if there is 1 closest match that is only different by 1 character
+# otherwise it returns the word
+find.closest.match <- function(word,dictionary) {
+  word <- gsub("歩|ぽ","ポ",word) #correct common typo
+  distance <- c()
+  for (d in dictionary) {
+    distance <- append(distance,stringdist(word,d))
+    if (min(distance) <= 1 & length(which(distance == min(distance)) <= 1)) {
+      closest_match <- dictionary[which.min(distance)]
+    }
+    else {
+      closest_match <- word
+    }
+  }
+  closest_match
+}
+
+#calculate levenshtein string edit distance
+calculate.distance <- function(response, target, NegV, VNeg) {
+  if (is.na(response)) {
+    NA
+  }
+  else {
+    distance = c()
+    if (is.na(target)) {
+      distance <- min(stringdist(response, NegV, method = "lv"),
+                      stringdist(response, VNeg, method = "lv"))
+    }
+    else {
+      distance <- stringdist(response, target, method = "lv")
+    }
+    distance
+  }
+}
+
+is.near.accurate <- function(distance, phase) {
+  if (is.na(distance)) {
+    NA
+  }
+  else {
+    if (phase == "NounProd") {
+      if (distance <= 1) 1 else 0
+    }
+    else {
+      if (distance <= 4) 1 else 0
+    }
+  }
+}
+
+id.neg.order <- function(response, distance, NegVSentence, VNegSentence) {
+  if (is.na(response) | distance > 4) {
+    NA
+  }
+  else {
+    NegVdistance = stringdist(response,NegVSentence)
+    VNegdistance = stringdist(response,VNegSentence)
+    if (NegVdistance < VNegdistance) {
+      1
+    }
+    else if (NegVdistance > VNegdistance) {
+      0
+    }
+    else {
+      NA
+    }
+  }
+}
+
+```
+
+# Introduction
+
+The data produced by Pavlovia is unwieldy and inconvenient for analysis (e.g., forced choice task response information and stimuli information are split across two separate rows). I convert this to a format more amenable for plotting and analysis and split data from different tasks into different files. This document contains all the code used for tidying the data and excluding participant data based on accuracy and completion. 
+
+# Import Raw Data
+
+```{r import raw data}
+
+#list .csv file names in the c01_data directory
+file_names <- list.files(path=here::here("JPN_raw_data"), pattern = "*.csv",full.names = TRUE)
+list <- lapply(file_names, read.csv, header=TRUE)
+
+#data frame contains all trials from all participants
+data <- bind_rows(list) %>% rename(condition = expName)
+
+data$condition <- case_when(
+  data$condition=="jpn_C01" ~ "Equiprobable",
+  data$condition=="jpn_C02" ~ "Majority NegV",
+  data$condition=="jpn_C03" ~ "Majority VNeg")
+
+#this will allow for easier trimming later
+data$word[data$word==""] <- NA
+data$Text[data$Text==""] <- NA
+data$textbox.text[data$textbox.text==""] <- NA
+```
+
+# Select FCT Trials
+Here, I isolate and select FCT trials in each phase of training (nouns, affirmatives, negatives). The FCT dataset has the following structure:
+
+  * *participant* = unique participant ID 
+  * *condition* = factor with 3 levels identifying which condition input condition the participant was a part of (values: `Equiprobable`, `Majority NegV`, `Majority VNeg`)
+  * *fct_trialN* = a number (`1-36`) which identifies the order the participant saw the FCT stimuli (note that there are 12 FCT stimuli in each phase)
+  * *phase* = factor with 3 levels identifying whether the stimuli were part of the noun, affirmative, or negative training phase (values: `NounFCT`,`AffFCT`, `NegFCT`)
+  * *fct_stim* = the word or sentence presented to the participant
+  
+```{r select fct trials}
+# isolate FCT trial data 
+data_fct <- data[!is.na(data$key_resp_fct.corr),] %>% 
+  #select only columns relevant for analysis
+  select(participant,condition,key_resp_fct.corr)
+
+#label the trial numbers and each FCT phase
+data_fct$fct_trialN <- 1:36
+data_fct$phase[data_fct$fct_trialN <= 12] = "NounFCT"
+data_fct$phase[between(data_fct$fct_trialN,13,24)] = "AffFCT"
+data_fct$phase[between(data_fct$fct_trialN,25,36)] = "NegFCT"
+
+#rows with the FCT stimulus are given on each row following (not on the same line) so we need to extract and append this information separately
+temp <- data[!is.na(data$word),] %>% 
+  select(participant,word) %>% 
+  rename(fct_stim = word)
+temp$fct_trialN <- 1:36
+data_fct <- merge(data_fct,temp, by = c("participant","fct_trialN"))
+remove(temp)
+
+head(data_fct)
+```
+
+# Select Production Trials
+I isolate and select production trials in each phase of the experiment. The production dataset has the following structure:
+
+  * *participant* = unique participant ID 
+  * *condition* = factor with 3 levels identifying which condition input condition the participant was a part of (values: `Equiprobable`, `Majority NegV`, `Majority VNeg`)
+  * *prod_trialN* = a number (`1-60`) which identifies the order the participant saw the production stimuli (note that there are 12 stimuli in the Noun and Affirmative production phases and 36 in the Negative phase)
+  * *phase* = factor with 3 levels identifying whether the stimuli were part of the noun, affirmative, or negative training phase (values: `NounProd`,`AffProd`, `NegProd`)
+  * *response* = the participant's production
+  * *target* = the correct target answer (for noun and affirmative responses)
+  * *NegVSentence* = the correct answer with NegV ordering (for negative responses)
+  * *VNegSentence* = the correct answer with VNeg ordering (for negative responses)
+  * *NegTF* = `1` if the target sentence contains a negative, `0` otherwise
+  * *distance* = Levenshtein distance of response from target answer
+  * *acc* = `1` if the response is an exact match to the target, `0` otherwise
+  * *near_acc* = `1` if the response if the distance from target is less than 4 for full sentences (i.e., allows for one word to be incorrect), `0` otherwise
+  
+```{r select production trials}
+# isolate noun and affirmative production trials
+data_prod12 <- data[!is.na(data$fb_yn.ran),] %>% 
+  #select only columns relevant for analysis
+  select(participant,condition,textbox.text) %>%
+  rename(response = textbox.text)
+
+#label the trial numbers and each FCT phase
+data_prod12$prod_trialN <- 1:24
+data_prod12$phase[data_prod12$prod_trialN <= 12] = "NounProd"
+data_prod12$phase[between(data_prod12$prod_trialN,13,24)] = "AffProd"
+
+# rows with the noun and affirmative production target are given on each row following (not on the same line) so we need to extract and append this information separately
+temp <- data[!is.na(data$Text),] %>% 
+  #select only columns relevant for analysis
+  select(participant,Text) %>%
+  rename(target = Text)
+temp$prod_trialN <- 1:24
+
+data_prod12 <- merge(data_prod12,temp, by = c("participant","prod_trialN"))
+remove(temp)
+
+# select only final production trials by keeping only rows that have a value in the NegTF column
+data_prod3 <- data[!is.na(data$NegTF),] %>% 
+  # then select only relevant columns for analysis
+  select(participant,condition,textbox.text,NegVSentence,VNegSentence,NegTF) %>%
+  rename(response = textbox.text)
+data_prod3$prod_trialN <- 25:60
+data_prod3$phase <- "NegProd"
+
+data_prod <- bind_rows(data_prod12,data_prod3)
+data_prod$NegTF[is.na(data_prod$NegTF)] = 0
+```
+
+```{r calculate production accuracy}
+#correct typos (errors within 1 edit distance) in participants responses
+data_prod$response <- mapply(correct.typos, response = data_prod$response)
+data_prod$distance <- mapply(calculate.distance,
+                           response = data_prod$response,
+                           target = data_prod$target,
+                           NegV = data_prod$NegVSentence,
+                           VNeg = data_prod$VNegSentence)
+
+# label accuracy and near-accuracy
+data_prod <- data_prod %>%
+  mutate(acc = case_when(
+    data_prod$response == data_prod$target ~ 1,
+    data_prod$response == data_prod$NegVSentence ~ 1,
+    data_prod$response == data_prod$VNegSentence ~ 1
+  ))
+
+data_prod$near_acc <- mapply(is.near.accurate,
+                           distance = data_prod$distance,
+                           phase = data_prod$phase)
+
+# label NA (blank) responses as inaccurate
+data_prod$acc[is.na(data_prod$acc)] = 0
+data_prod$near_acc[is.na(data_prod$near_acc)] = 0
+
+# calculate accuracy and near-accuracy measures for each participant
+prod_acc_byp <- data_prod %>%
+  group_by(participant,condition,phase) %>%
+  summarise(mean_acc = mean(acc),
+            mean_near_acc = mean(near_acc))
+negprod_acc_byp <- prod_acc_byp %>% filter(phase == "NegProd") 
+mean(negprod_acc_byp$mean_acc)
+mean(negprod_acc_byp$mean_near_acc)
+```
+Because of a high proportion of errors related to mixing up noun labels and typos related to Japanese keyboard functions (e.g., the response being in hiragana rather than katakana script), *near-accuracy* of production responses was calculated in addition to measures of perfect accuracy. 
+
+Production accuracy was calculated as follows: 
+
+  1. Typos were corrected by splitting each response typed by a participant into a series of words by splitting the string at the spaces and identifying the closest legal word for each. The closest match was determined using Levenshtein string edit distance. Levenshtein distance is the minimal number of insertions, deletions, and symbol substitutions required to transform a string to another. If a participant's word was one edit distance away from only one legal word then the participant's response was corrected to that legal word.
+  2. Next, the Levenshtein distance was calculated between the whole corrected response and the target sentence. 
+  3. In the *acc* column, responses were coded as 1 if and only if the response (after the above correction for typos) was an exact match to the target, and was coded as 0 otherwise.
+  4. In the *near_acc* column, responses were coded as 1 if the Levenshtein distance from the response and the target string was less than 4, for full sentences. For example, a response where only one lexical item was swapped out for another would be classified as near-accurate. 
+  
+## Exclusions
+
+7 participants with <75% near-accurate responses were excluded from further analysis.
+
+
+```{r exclusions}
+# participants with <75% accuracy:
+# 1. R_1rHyfMTU4R3Ng8o (E, 67%), 2. R_3halPq6pgfCYq9T (E, 63%), 3. R_3sbpeXZ6cpDH6SI (NegV, 53%),4. R_vwMAKJs09SZIREd (E, 72%), 5. R_ywJlRnprYwGbyOl (NegV, 0%), 6. R_3nlnuIzdAYVnZgf (VNeg, 63%), 7. R_3Rf41HmUdWO9jSZ (E, 56%)
+
+# exclude participants with low near-accuracy (<75%) in the final neg production phase
+data_prod <- data_prod[!(data_prod$participant %in% c("R_ywJlRnprYwGbyOl",
+                                                "R_3sbpeXZ6cpDH6SI",
+                                                "R_vwMAKJs09SZIREd",
+                                                "R_1rHyfMTU4R3Ng8o",
+                                                "R_3halPq6pgfCYq9T",
+                                                "R_3nlnuIzdAYVnZgf",
+                                                "R_3Rf41HmUdWO9jSZ")),]
+
+data_fct <- data_fct[!(data_fct$participant %in% c("R_ywJlRnprYwGbyOl",
+                                                "R_3sbpeXZ6cpDH6SI",
+                                                "R_vwMAKJs09SZIREd",
+                                                "R_1rHyfMTU4R3Ng8o",
+                                                "R_3halPq6pgfCYq9T",
+                                                "R_3nlnuIzdAYVnZgf",
+                                                "R_3Rf41HmUdWO9jSZ")),]
+
+# save tidy production files
+write_xlsx(data_prod,path=here("tidy_data/JPNProd.xlsx"))
+write_xlsx(data_fct,path=here("tidy_data/JPNFCT.xlsx"))
+```
+
+## Calculate Word Order
+
+```{r}
+JPNNegProd <- data_prod %>% filter(NegTF==1)
+
+JPNNegProd$NegVorder <- mapply(id.neg.order,
+                               response = JPNNegProd$response,
+                               distance = JPNNegProd$distance,
+                               NegVSentence = JPNNegProd$NegVSentence,
+                               VNegSentence = JPNNegProd$VNegSentence)
+
+JPNNegProd$majorityOrder <- ifelse(JPNNegProd$condition == "Majority VNeg",
+                              ifelse(is.na(JPNNegProd$NegVorder), NA,
+                                ifelse(JPNNegProd$NegVorder == 1, 0, 1)),
+                              JPNNegProd$NegVorder)
+
+write_xlsx(JPNNegProd,path=here("tidy_data/JPNNegProd.xlsx"))
+```
+

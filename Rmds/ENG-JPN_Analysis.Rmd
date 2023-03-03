@@ -1,0 +1,292 @@
+---
+title: "ENG-JPN_Analysis"
+author: "Danielle Burgess"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE, fig.show='hold', results='hold')
+
+# Setup -----
+library(here) #for file referencing with here()
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(boot)
+library(scales)
+library(tidyr)
+library(lme4)
+library(knitr)
+library(buildmer) # for model selection
+library(broom)
+library(emmeans) # for post hoc pairwise comparisons
+library(plotrix) #for std.error()
+
+```
+
+```{r import data}
+# this code chunk creates the data frames FCT, Prod, and NegProd, which contain the data from forced choice task trials, all production trials, and negative sentence production trials respectively from both the English and Japanese language background groups
+
+# import data with FCT trials only
+JPNFCT <- read_excel(path=here("tidy_data/JPNFCT.xlsx"))
+ENGFCT <- read_excel(path=here("tidy_data/ENGFCT.xlsx"))
+# rename columns to match, then merge data frames into a new one called FCT
+JPNFCT <- JPNFCT %>% rename(trialSuccess = key_resp_fct.corr)
+ENGFCT <- ENGFCT %>% rename(participant = player, condition = Condition)
+JPNFCT$language <- c("Japanese")
+ENGFCT$language <- c("English")
+keep_cols <- c("participant","trialSuccess","condition","phase","language")
+JPNFCT <- JPNFCT %>% subset(select = keep_cols)
+ENGFCT <- ENGFCT %>% subset(select = keep_cols)
+FCT <- rbind(JPNFCT,ENGFCT)
+FCT$condition <- as.factor(FCT$condition)
+remove(JPNFCT,ENGFCT,keep_cols)
+
+#import data with production trials from all three training phases
+JPNProd <- read_excel(path=here("tidy_data/JPNProd.xlsx"))
+ENGProd <- read_excel(path=here("tidy_data/ENGProd.xlsx"))
+# rename columns to match, then merge data frames into a new one called Prod
+ENGProd <- ENGProd %>% rename(participant = player, condition = Condition)
+JPNProd$language <- c("Japanese")
+ENGProd$language <- c("English")
+keep_cols <- c("participant","condition","phase","acc","near_acc","language")
+JPNProd <- JPNProd %>% subset(select = keep_cols)
+ENGProd <- ENGProd %>% subset(select = keep_cols)
+Prod <- rbind(JPNProd,ENGProd)
+Prod$condition <- as.factor(Prod$condition)
+remove(JPNProd,ENGProd,keep_cols)
+
+# import data with negative sentence production trials only
+JPNNegProd <- read_excel(path=here("tidy_data/JPNNegProd.xlsx"))
+ENGNegProd <- read_excel(path=here("tidy_data/ENGNegProd.xlsx"))
+# rename columns to match, then merge data frames into a new one called NegProd
+ENGNegProd <- ENGNegProd %>% rename(participant = player, condition = Condition)
+JPNNegProd$language <- c("Japanese")
+ENGNegProd$language <- c("English")
+keep_cols <- c("participant","response","condition","NegVorder","majorityOrder","language")
+JPNNegProd <- JPNNegProd %>% subset(select = keep_cols)
+ENGNegProd <- ENGNegProd %>% subset(select = keep_cols)
+NegProd <- rbind(JPNNegProd,ENGNegProd)
+NegProd$condition <- as.factor(NegProd$condition)
+remove(JPNNegProd,ENGNegProd,keep_cols)
+```
+
+# Introduction
+
+This document contains code for analysis and visualization of comparisons between English-speaking and Japanese-speaking participant groups who were each trained on an artificial language which contained a mixture of both preverbal and postverbal negation marking. The training procedure and artificial language for each group was similar except that the lexical items in the Japanese experiment were displayed in Katakana instead of Latin script. 
+
+Sentences in the artificial language were either of the form NegVSO or VNegSO. Participants were randomly assigned to one of three input conditions which determined the proportion of each order that the participant was exposed to: Majority NegV (75% NegV), Equiprobable (50% NegV), and Majority VNeg (25% VNeg).
+
+Participants were trained on the artificial language in three phases. First, they were exposed to nouns, then affirmative sentences, and finally negative sentences. Each exposure phase was followed by a comprehension test, which took the form of a 2-alternative forced choice task (abbreviated FCT here), and a production test, where participants typed descriptions of images in the artificial language.
+
+# Accuracy
+
+In this section, I compare the accuracy on both the forced choice task responses and production responses across both language and condition groups. 
+
+## FCT
+
+```{r FCT accuracy report}
+
+# FCT report numbers ----
+meanFCT_overall <- percent(mean(FCT$trialSuccess), accuracy=0.1)
+
+NegFCT_trial1 <- FCT %>%
+  filter(phase == "NegFCT") %>%
+  group_by(participant) %>%
+  slice(1)
+NegFCT_trial1_mean <- percent(mean(NegFCT_trial1$trialSuccess), accuracy=0.1)
+NegFCT_removetrial1 <- FCT %>%
+  filter(phase == "NegFCT") %>%
+  group_by(participant) %>%
+  slice(2:12)
+NegFCT_removetrial1_mean <- percent(mean(NegFCT_removetrial1$trialSuccess), accuracy=0.1)
+
+```
+
+Overall, participants were quite successful at the Forced Choice Task with an overall accuracy of `r meanFCT_overall`. Table S1 (shown visually in Figure S1) shows the accuracy within each phase, condition, and language group.
+
+Mixed effects logistic regression models were fit using the lme4 package to compare forced choice task accuracy across Language Background, Condition, and Phase. The buildmer package was used to evaluate the maximal feasible model (the maximal effects structure that would converge) and to identify the model with the best fit through automated backwards stepwise elimination. This process compares the fit of a more complex model to the fit of a nested simpler model, using the Likelihood Ratio Test to determine whether the effect of a covariate is significant. The maximal effects structure that would converge included Phase, Language Background, Condition, and all of their interactions as fixed effects and a random intercept for participant. Backwards stepwise elimination identified the model with only a fixed effect for Phase and a random intercept for participant as the best fit. Notably, the fixed effects for Condition and Language Background did not result in a better fit, indicating that the input condition and the participant's language background was not an important factor in explaining accuracy in the Forced Choice Task. The final model indicated that accuracy in the Negative Sentence FCT was significantly lower than in the Affirmative Sentence FCT. 
+
+The decrease in FCT accuracy after negative sentence training, compared to noun trials and affirmative sentence trials, is primarily driven by inaccuracy in the first trial of this task which had an overall accuracy of `r NegFCT_trial1_mean`, but after failing a trial in this phase, participants saw a reminder 'Remember that negation refers to what did NOT happen'. Upon removing the first trial of this phase, FCT accuracy in the negation training phase rises to `r NegFCT_removetrial1_mean`.
+
+```{r FCT accuracy plotting}
+FCT_groups <- FCT %>%
+  na.omit() %>%
+  group_by(condition,language,phase) %>%
+  summarise(mean = mean(trialSuccess, na.rm=TRUE),
+            se = std.error(trialSuccess))
+FCT_groups$condition <- factor(FCT_groups$condition)
+
+# plot FCT accuracy -----
+FCT_groups$phase <- factor(FCT_groups$phase,levels=c("NounFCT","AffFCT","NegFCT"))
+fig_FCTacc <- ggplot(FCT_groups, aes(y=mean, x=phase, fill=language))+
+  geom_errorbar(aes(ymin=mean-se,ymax=mean+se),position=position_dodge(0.7),width=0.4)+
+  geom_point(stat="identity",position=position_dodge(0.7),size = 2, shape=21)+
+  facet_grid(~ condition)+
+  scale_y_continuous(limits=c(0,1))+
+  labs(x = "Training Phase", y = "Accuracy", fill="Participant \nLanguage \nBackground")
+fig_FCTacc
+
+# FCT accuracy table -----
+FCT_groups$mean <- percent(FCT_groups$mean, accuracy=0.1)
+kable(FCT_groups,caption = "Table S1. Accuracy in FCT trials")
+```
+
+```{r find best fit fct accuracy model,  eval = FALSE}
+# this code chunk is currently set not to evaluate on knit to lessen computing time
+# find maximal model that will converge
+max.model <- trialSuccess ~ language * condition * phase + (phase|participant)
+fct.m <- buildmer(max.model,data=FCT,family="binomial",buildmerControl=buildmerControl(direction='order', args=list(control=lmerControl(optimizer='bobyqa'))))
+# maximal model that will converge:
+# trialSuccess ~ 1 + phase + language + condition + language:condition + phase:language + phase:condition + phase:language:condition + (1 | participant)
+(max.model <- formula(fct.m@model))
+fct.m <- buildmer(max.model,data=FCT,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# trialSuccess ~ 1 + phase + (1 | participant)
+(max.model <- formula(fct.m@model))
+# the model that best fits the data includes fixed effects for phase and a random intercept for participant; the fixed effects for condition and language did not result in a significantly better fit, indicating that the input condition and the participant's language background was not an important factor in explaining accuracy on the forced choice task.
+```
+
+```{r fct accuracy model}
+# this code chunk uses the best fit model found by buildmer in the previous chunk for the report
+fct.m <- glmer(trialSuccess ~ 1 + phase + (1 | participant), data=FCT, family="binomial",
+               control=glmerControl(optimizer='bobyqa'))
+summary(fct.m)
+```
+
+## Production
+
+```{r production accuracy report}
+# production accuracy report numbers ----
+near_accProd_overall <- percent(mean(Prod$near_acc), accuracy=0.1)
+```
+
+Responses that were categorized as near-accurate are reported here and included in subsequent analyses. In the English experiment if the responses were 5 or fewer characters off from a possible correct response, and in the Japanese experiment if the responses were 4 or fewer characters off from a possible correct response (see the respective DataPreparation.Rmd files to view this code). For each experiment, these cut-offs corresponded to roughly having one and only one word incorrect in any given response. Prior to this analysis, participants with less than 75% near-accurate responses in the final production phase were excluded.
+
+`r near_accProd_overall` of production trials from the remaining participants met this measure of near-accuracy. Table S2 (shown visually in Figure S2) shows the percentage of near-accurate responses within each phase, condition, and language group. 
+
+For production accuracy, backwards stepwise comparison of logistic mixed effects regression models identified that the best fit model had an effect structure with fixed effects for Language Background and Phase (and no interaction terms) and a random intercept and random slope for the effect of phase for each participant. This model indicated that accuracy for noun-phase productions was lower than for affirmative productions and there was no significant difference between affirmative-phase and negative-phase production accuracy. It also showed that the Japanese language background group had lower production accuracy overall than the English language background group. 
+
+```{r plot accuracy}
+prod_groups <- Prod %>%
+  na.omit() %>%
+  group_by(condition,language,phase) %>%
+  summarise(mean = mean(near_acc, na.rm=TRUE),
+            se = std.error(near_acc))
+prod_groups$condition <- factor(prod_groups$condition)
+
+#plot Prod Accuracy -----
+prod_groups$phase <- factor(prod_groups$phase,levels=c("NounProd","AffProd","NegProd"))
+
+JPNENGProdAcc <- ggplot(prod_groups, aes(y=mean, x=phase, fill=language))+
+  geom_errorbar(aes(ymin=mean-se,ymax=mean+se),position=position_dodge(0.7),width=0.6)+
+  geom_point(stat="identity",position=position_dodge(0.7),size = 2, shape=21)+
+  facet_grid(~ condition)+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_discrete(labels = c('Noun','Aff','Neg'))+
+  labs(x = "Phase", y = "Accuracy", fill="Participant \nLanguage \nBackground")
+JPNENGProdAcc
+
+ggsave(filename="JPNENGProdAcc.png",plot=JPNENGProdAcc,path=here("output"),width=6,height=4,units="in")
+
+# production accuracy table -----
+prod_groups$mean <- percent(prod_groups$mean, accuracy=0.1)
+kable(prod_groups,caption = "Table S2. Accuracy in Production trials")
+```
+
+```{r find best fit prod accuracy model,  eval = FALSE}
+# this code chunk is currently set not to evaluate on knit to lessen computing time
+# find maximal model that will converge
+max.model <- near_acc ~ language * condition * phase + (phase|participant)
+prod.m <- buildmer(max.model,data=Prod,family="binomial",buildmerControl=buildmerControl(direction='order', args=list(control=lmerControl(optimizer='bobyqa'))))
+# maximal model that will converge:
+# near_acc ~ 1 + phase + language + condition + phase:language + phase:condition + language:condition + phase:language:condition + (1 + phase | participant)
+(max.model <- formula(prod.m@model))
+prod.m <- buildmer(max.model,data=Prod,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# near_acc ~ 1 + phase + language + (1 + phase | participant)
+(max.model <- formula(prod.m@model))
+```
+
+```{r prod accuracy model}
+# this code chunk uses the best fit model found by buildmer in the previous chunk for the report
+prod.m <- glmer(near_acc ~ 1 + phase + language + (1 + phase | participant), data=Prod, family="binomial", control=glmerControl(optimizer='bobyqa'))
+summary(prod.m)
+```
+
+# Neg Word Order: How much do participants produce each word order?
+
+Figure S3 shows the proportion of NegV order produced by participants during production trials. The dashed lines indicate the proportion of NegV order in the input. Points represent participant means and errors bars represent standard error.
+
+```{r graph word order}
+# generate participant means
+NegV_participant <- NegProd %>%
+  na.omit %>%
+  group_by(condition,participant,language) %>%
+  summarise(mean_negV = mean(NegVorder, na.rm=TRUE),
+            mean_maj = mean(majorityOrder, na.rm=TRUE))
+NegV_participant$condition <- factor(NegV_participant$condition)
+
+NegV_summary <- NegV_participant %>%
+  group_by(condition,language) %>%
+  summarise(mean = mean(mean_negV),
+            se = std.error(mean_negV))
+
+# input proportions for plotting
+NegV_summary$input_prop <- case_when(
+  NegV_summary$condition=="Majority VNeg" ~ 0.25,
+  NegV_summary$condition=="Majority NegV" ~ 0.75,
+  NegV_summary$condition=="Equiprobable" ~ 0.50)
+
+# plot production of NegV order
+JPNENGNegV <- ggplot(data=NegV_participant, aes(x=condition,fill=language))+
+  geom_violin(position=position_dodge(),aes(fill=language,y=mean_negV),alpha=0.5)+
+  geom_errorbar(data=NegV_summary, aes(ymin=input_prop,ymax=input_prop),linetype="dashed", size=.4)+
+  geom_errorbar(data=NegV_summary, position=position_dodge(0.9), 
+                aes(ymin=mean-se,ymax=mean+se), width=0.1) +
+  geom_point(data=NegV_summary, position=position_dodge(width=0.9), 
+             aes(y=mean), dotsize=0.5, binaxis="y", stackdir="center", shape=16)+
+  geom_dotplot(position="dodge", aes(y=mean_negV), dotsize=0.3, binaxis="y", stackdir="center", alpha=0.5)+
+  labs(x = "Input Condition", y = "Proportion NegV Order",fill="Participant \nLanguage \nBackground") +
+  guides(fill = guide_legend(override.aes = list(shape = NA)))
+JPNENGNegV
+
+ggsave(filename="JPNENGNegV.png",plot=JPNENGNegV,path=here("output"),width=6,height=4,units="in")
+```
+
+To test whether whether the amount of preverbal negation used differed across language background for each condition, I fit a mixed effects logistic regression model with fixed effects for Language Background, Condition, and their interaction, and by-participant random intercepts. Fixed effects were Helmert coded, which compares levels of a variable with the mean of subsequent levels of a variable; the intercept represents the unweighted grand mean.
+
+Pairwise comparisons were conducted on this model with Tukey-method p-value adjustment using the emmeans package. These comparisons reveal that Japanese-speaking participants produced significantly more postverbal negation than English-speaking participants in the Majority VNeg Condition; there were no significant difference between the two language background groups in the other input conditions.
+
+```{r model negv order}
+# Establish helmert coding: this compares levels of a variable with the mean of subsequent levels of a variable
+# For the condition comparison, the first contrast compares the mean of the Equiprobable Condition to the combined mean of the two Majority Conditions
+# The second contrast compares the mean of the Majority NegV Condition to the mean of the Majority VNeg Conditions
+NegProd$condition <- as.factor(NegProd$condition)
+my.helmert3 <- matrix(c(2/3,-1/3,-1/3,0,1/2,-1/2),ncol=2)
+contrasts(NegProd$condition) <- my.helmert3
+colnames(contrasts(NegProd$condition)) <- c("EvVNNV", "NVvVN")
+
+# For the language background comparison, the Helmert condition with two levels is equivalent to using simple contrast coding, which compares each level to the reference level but unlike in treatment coding, the intercept is the grand mean
+NegProd$language <- as.factor(NegProd$language)
+my.helmert2 <- matrix(c(1/2,-1/2),ncol=1)
+contrasts(NegProd$language) <- my.helmert2
+colnames(contrasts(NegProd$language)) <- c("ENGvJPN")
+
+negv.m <- glmer(NegVorder ~ language * condition + (1|participant), data=NegProd, family="binomial", control=glmerControl(optimizer='bobyqa'))
+summary(negv.m)
+```
+
+```{r post-hoc pairwise comparison}
+negv.emm <- emmeans(negv.m, ~ language | condition)
+contrast(negv.emm, "pairwise")
+```
+

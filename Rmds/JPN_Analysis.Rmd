@@ -1,0 +1,371 @@
+---
+title: "JPN Analysis"
+author: "Danielle Burgess"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE, fig.show='hold', results='hold')
+
+library(here)
+library(readxl)
+library(scales)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringdist)
+library(lme4)
+library(buildmer)
+library(plotrix) #for std.error()
+
+```
+
+```{r import data}
+# import FCT data
+JPNFCT <- read_excel(path=here("tidy_data/JPNFCT.xlsx"))
+# import production data
+JPNProd <- read_excel(path=here("tidy_data/JPNProd.xlsx"),
+                      col_types = c("text", "numeric", "text", "text", 
+                                    "text", "text", "text", "text",
+                                    "numeric", "numeric", "numeric", "numeric"))
+JPNProd$phase <- factor(JPNProd$phase,levels=c("NounProd","AffProd","NegProd"))
+# import negation data
+JPNNegProd <- read_excel(path=here("tidy_data/JPNNegProd.xlsx"),
+                         col_types = c("text", "numeric", "text", "text", 
+                                       "text", "text", "text", "text",
+                                       "numeric", "numeric", "numeric", "numeric",
+                                       "numeric","numeric"))
+JPNNegProd$condition <- as.factor(JPNNegProd$condition)
+
+# import Questionnaire Data
+JPNPostExpQ <- read_excel(path=here("tidy_data/JPNPostExpQ.xlsx"))
+JPNPostExpQ <- subset(JPNPostExpQ, participant %in% JPNProd$participant)
+JPNPostExpQ <- na_if(JPNPostExpQ,"NA")
+JPNPostExpQ <- JPNPostExpQ %>% mutate_at(c('aoa','total','use_rate','understand_rate','media_exp_rate','social_exp_rate'), as.numeric)
+```
+
+
+# Introduction
+Is there a bias favoring preverbal negation in learning among Japanese speakers in Japan? 
+
+Participants in this study were exposed to an artificial language that had a mixture of NegV and VNeg word orders, and the ratio of these orders was manipulated depending on experimental condition. Those in the equiprobable condition saw equal amounts of both orders, whereas those in the Majority Preverbal Negation Condition saw 75% NegV order, and those in the Majority Postverbal Negation Condition saw 75% VNeg order.
+
+Participants were trained on the artificial language in three phases. First, they were exposed to nouns, then affirmative sentences, and finally negative sentences. Each exposure phase was followed by a comprehension test, which took the form of a 2-alternative forced choice task (abbreviated FCT here), and a production test, where participants typed descriptions of images in the artificial language. This file describes analysis of accuracy in each of these tests and analysis of word order preferences. Prior to these analyses, participants with low accuracy (<75%) in the final production phase were excluded.
+
+
+# Accuracy 
+
+## FCT Accuracy
+In each FCT trial, participants were presented with two images and a description in the artificial language and were asked to choose which image matched the description.
+
+The lower mean accuracy in the Negative Sentence phase of the experiment is primarily driven by errors in the first trial of that stage. After failing a trial in this phase participants saw the reminder 'Remember that negation refers to what did NOT happen', and overall accuracy improves if the first trial is excluded. 
+
+```{r fct accuracy, message=FALSE}
+# accuracy and standard error by phase and condition
+FCT_acc <- JPNFCT %>%
+  group_by(condition,phase) %>%
+  summarise(mean = mean(key_resp_fct.corr),
+            se = std.error(key_resp_fct.corr))
+
+# accuracy by participant 
+FCT_acc_byp <- JPNFCT %>%
+  group_by(participant,condition,phase) %>%
+  summarise(mean = mean(key_resp_fct.corr))
+FCT_acc_byp$phase <- factor(FCT_acc_byp$phase,levels=c("NounFCT","AffFCT","NegFCT"))
+```
+
+```{r plot fct accuracy}
+Ch5FCTAcc <- ggplot(FCT_acc_byp, aes(x=phase,y=mean))+
+  geom_dotplot(position="dodge", binaxis="y", stackdir="center", dotsize=0.2,fill="white",alpha=0.5)+
+  geom_point(data=FCT_acc, stat="identity",size = 2)+
+  geom_errorbar(data=FCT_acc, aes(ymin=mean-se,ymax=mean+se), width=0.4)+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_discrete(labels=c("Noun","Aff","Neg"))+
+  facet_grid(~ condition)+
+  labs(x = NULL, y = "Mean FCT Accuracy")
+Ch5FCTAcc
+ggsave(filename="Ch5FCTAcc.png",plot=Ch5FCTAcc,path=here("output"),width=6,height=4,units="in")
+```
+
+```{r first trial NegFCT}
+FCT_overall_mean <- percent(mean(JPNFCT$key_resp_fct.corr),accuracy = 0.1)
+
+# checking the source of low accuracy in NegFCT is first trial (FCT trial 25 in the experiment)
+meanFCT_trialN <- setNames(aggregate(key_resp_fct.corr~fct_trialN,JPNFCT,mean),c("trialN","acc"))
+meanFCT_trial25 <- percent(meanFCT_trialN$acc[25],accuracy=0.1)
+```
+
+Across conditions and phases, overall accuracy in the forced choice task was high (`r FCT_overall_mean `). However, to check whether there were differences in accuracy among the different input conditions, the buildmer package was used to evaluate the maximal feasible model for FCT accuracy, and to subsequently identify the model with the best fit through automated backwards stepwise elimination. This process compares the fit of a more complex model to the fit of a nested simpler model, using the Likelihood Ratio Test to determine whether the effect of a covariate is significant. The maximal effect structure for forced choice task accuracy included Phase, Condition, and their interaction as fixed effects. Backwards stepwise elimination identified the model with only a fixed effect for Phase as the best fit. Notably, including Condition as a fixed effect did not result in a better fit, indicating that the input condition was not an important factor in explaining accuracy in this task. 
+
+```{r find best fit fct accuracy model,  eval = FALSE}
+# this code chunk is currently set not to evaluate on knit to lessen computing time
+# find maximal model that will converge
+max.model <- key_resp_fct.corr ~ condition * phase + (phase|participant)
+fct.m <- buildmer(max.model,data=JPNFCT,family="binomial",buildmerControl=buildmerControl(direction='order', args=list(control=lmerControl(optimizer='bobyqa'))))
+# maximal model that will converge:
+# key_resp_fct.corr ~ condition * phase
+(max.model <- formula(fct.m@model))
+fct.m <- buildmer(max.model,data=JPNFCT,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# key_resp_fct.corr ~ 1 + phase
+(max.model <- formula(fct.m@model))
+# the model that best fits the data includes fixed effects for phase; the fixed effects for condition did not result in a significantly better fit, indicating that the input condition was not an important factor in explaining accuracy on the forced choice task.
+```
+
+```{r fct accuracy model}
+# this code chunk uses the best fit model found by buildmer in the previous chunk for the report
+fct.m <- glm(key_resp_fct.corr ~ 1 + phase, data=JPNFCT, family="binomial")
+summary(fct.m)
+```
+
+## Production Accuracy
+In this file 'strict accuracy' refers to exact matches between the participant input and target after correcting for minor typos. 'Loose accuracy' counts trials where the Levenshtein distance from the target string was 4 or less (for instance, a response where only one lexical item was swapped out for another would be classified as accurate by this measure. Refer to the data preparation file to see how accuracy and Levenshtein distance was calculated in more detail.
+
+```{r prod accuracy, message=FALSE}
+
+#overall accuracy
+prod_overall_mean <- percent(mean(JPNProd$near_acc), accuracy=0.1)
+
+# calculate mean accuracy (strict and loose) by participant
+prod_acc_byp <- JPNProd %>%
+  group_by(participant,condition,phase) %>%
+  summarise(acc_strict_mean = mean(acc),
+            acc_loose_mean = mean(near_acc))
+
+# calculate mean accuracy (strict and loose) and standard errors by phase and condition
+prod_acc <- JPNProd %>%
+  group_by(condition,phase) %>%
+  summarise(acc_strict_mean = mean(acc),
+            acc_strict_se = std.error(acc),
+            acc_loose_mean = mean(near_acc),
+            acc_loose_se = std.error(near_acc))
+```
+
+```{r plot strict accuracy}
+Ch5ProdStrictAcc <- ggplot(prod_acc_byp, aes(y=acc_strict_mean, x=phase)) +
+  geom_dotplot(position="dodge",binaxis="y", stackdir="center",dotsize=0.2,fill="white",alpha=0.5)+
+  geom_point(data=prod_acc, stat="identity",size = 2)+
+  geom_errorbar(data=prod_acc, aes(ymin=acc_strict_mean-acc_strict_se,ymax=acc_strict_mean+acc_strict_se),width=0.4)+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_discrete(labels = c('Noun','Aff','Neg'))+
+  facet_grid(~condition)+
+  labs(y="Mean Production Accuracy (Strict)",x=NULL)
+Ch5ProdStrictAcc 
+ggsave(filename="Ch5ProdStrictAcc.png",plot=Ch5ProdStrictAcc ,path=here("output"),width=6,height=4,units="in")
+```
+
+```{r plot loose accuracy}
+Ch5ProdLooseAcc <- ggplot(prod_acc_byp, aes(y=acc_loose_mean, x=phase)) +
+  geom_dotplot(position="dodge",binaxis="y", stackdir="center",dotsize=0.2,fill="white",alpha=0.5)+
+  geom_point(data=prod_acc, stat="identity",size = 2)+
+  geom_errorbar(data=prod_acc, aes(ymin=acc_loose_mean-acc_loose_se,ymax=acc_loose_mean+acc_loose_se),width=0.4)+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_discrete(labels = c('Noun','Aff','Neg'))+
+  facet_grid(~condition)+
+  labs(y="Mean Production Accuracy (Loose)",x=NULL)
+Ch5ProdLooseAcc 
+ggsave(filename="Ch5ProdLooseAcc.png",plot=Ch5ProdLooseAcc ,path=here("output"),width=6,height=4,units="in")
+```
+
+Across conditions and phases, overall accuracy in the production task was high (`r prod_overall_mean`). Backwards stepwise elimination with the buildmer package was again used to check whether there were differences in accuracy among the different input conditions. This identified a model with only a fixed effect for Phase as the best fit. Notably, including Condition as a fixed effect did not result in a better fit, indicating that the input condition was not an important factor in explaining accuracy in this task.
+
+```{r find best fit prod accuracy model,  eval = FALSE}
+# this code chunk is currently set not to evaluate on knit to lessen computing time
+# find maximal model that will converge
+max.model <- near_acc ~ condition * phase + (phase|participant)
+prod.m <- buildmer(max.model,data=JPNProd,family="binomial",buildmerControl=buildmerControl(direction='order', args=list(control=lmerControl(optimizer='bobyqa'))))
+# maximal model that will converge:
+# near_acc ~ 1 + phase * condition 
+(max.model <- formula(prod.m@model))
+prod.m <- buildmer(max.model,data=JPNProd,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# near_acc ~ 1 + phase
+(max.model <- formula(prod.m@model))
+```
+
+## Excluded Critical Trials
+
+```{r excluded critical trials}
+cr_excluded  <- sum(is.na(JPNNegProd$NegVorder))
+cr_total <- length(JPNNegProd$NegVorder)
+cr_percent <- percent(cr_excluded/cr_total, accuracy=0.1) 
+```
+
+The total number of excluded critical (negative sentence) production trials across the experiment is `r cr_excluded` (`r cr_percent` out of `r cr_total` trials).
+
+# Word Order
+
+This graph shows the proportion of NegV order in each condition. 
+
+```{r summarize NegV order, message=FALSE}
+# calculate proportion NegV order by participant
+NegV_byp <- JPNNegProd %>%
+  drop_na(NegVorder) %>%
+  group_by(condition,participant,phase) %>%
+  summarise(mean_negV = mean(NegVorder))
+
+# summary statistics by condition and phase
+NegV_summary <- NegV_byp %>%
+  group_by(condition,phase) %>%
+  summarise(mean = mean(mean_negV),
+            se = std.error(mean_negV))
+
+NegV_summary$input_prop <- case_when(
+  NegV_summary$condition=="Majority VNeg" ~ 0.25,
+  NegV_summary$condition=="Majority NegV" ~ 0.75,
+  NegV_summary$condition=="Equiprobable" ~ 0.50)
+```
+
+```{r plot NegV order}
+Ch5NegVPlot <- ggplot(data=NegV_byp, aes(x=condition, fill=condition))+
+  geom_violin(position=position_dodge(),aes(y=mean_negV),show.legend = FALSE, alpha=0.5)+
+  geom_errorbar(data=NegV_summary, aes(ymin=input_prop,ymax=input_prop),linetype="dashed", size=.4)+
+  geom_errorbar(data=NegV_summary, position=position_nudge(0.5),aes(y=mean, ymin=mean-se,ymax=mean+se),width=0.1)+
+  geom_dotplot(position="dodge", aes(y=mean_negV), dotsize=0.3, binaxis="y", stackdir="center", alpha=0.5,show.legend = FALSE)+
+  geom_dotplot(data=NegV_summary, aes(y=mean), dotsize=0.8, alpha=0.5, binaxis="y", stackdir="center", position_nudge(x=0.5),show.legend = FALSE)+
+  labs(x = "Input Condition", y = "Proportion NegV Order")
+Ch5NegVPlot
+
+ggsave(filename="Ch5NegVPlot.png",plot=Ch5NegVPlot,path=here("output"),width=6,height=4,units="in")
+```
+
+
+## NegV Order Use
+In the following chunk, we use mixed effects logistic regression to answer the following questions:
+
+  1. Are participants in the Equiprobable condition producing NegV order significantly greater than chance? 
+
+  * A model including NegV Order as the binary dependent variable, Condition as a fixed effect, and random intercepts for Participants, with the Equiprobable condition as the reference level, showed no significant intercept, indicating that the choice of preverbal negation order in the Equiprobable condition was not significantly different from chance.
+    
+  2. Are participants in the Majority NegV condition more likely to boost the majority order (NegV) than participants in the Majority VNeg condition?
+  
+  * A model including Majority Order as the binary dependent variable, Condition as a fixed effect, and random intercepts for Participants, with the Majority NegV condition as the reference level, showed no significant difference between the amount of boosting in the Majority NegV condition and the Majority VNeg Condition.
+    
+Thus, the Japanese data are not consistent with a bias favoring Preverbal Negation (nor a bias favoring Postverbal Negation).
+
+```{r negv models}
+#  1. If the intercept is significant and positive then odds of participants producing NegV order was significantly greater than chance
+
+model.equi <- glmer(NegVorder~condition+(1|participant),data=JPNNegProd,family="binomial")
+summary(model.equi)
+
+# 2. Compare chance of majority word order use in NegV condition against VNeg condition
+JPNNegProd$condition <- relevel(JPNNegProd$condition, "Majority NegV")
+model.majority <- glmer(majorityOrder~condition+(1|participant),data=JPNNegProd,family="binomial")
+summary(model.majority)
+```
+
+# Language Background
+
+```{r language background summary statistics}
+
+JPNLangExp <- JPNPostExpQ %>% 
+  group_by(language) %>% 
+  summarise(count = n(),
+            mean_aoa = mean(aoa, na.rm=TRUE),
+            mean_total = mean(total, na.rm=TRUE),
+            mean_use = mean(use_rate, na.rm=TRUE),
+            mean_understand = mean(understand_rate, na.rm=TRUE),
+            mean_media_exp = mean(media_exp_rate, na.rm=TRUE),
+            mean_social_exp = mean(social_exp_rate, na.rm=TRUE))
+
+# participants were asked to rate their comfort using and understanding each language they listed in the survey
+# these ratings were highly correlated
+cor.test(JPNPostExpQ$use_rate,JPNPostExpQ$understand_rate)
+cor.test(JPNPostExpQ$use_rate,JPNPostExpQ$media_exp_rate)
+cor.test(JPNPostExpQ$use_rate,JPNPostExpQ$social_exp_rate)
+```
+
+```{r treat ratings as ordered factors}
+#treat ratings as ordered factors
+JPNPostExpQ$use_rate <- factor(JPNPostExpQ$use_rate,ordered=TRUE)
+JPNPostExpQ$understand_rate <- factor(JPNPostExpQ$understand_rate,ordered=TRUE)
+JPNPostExpQ$media_exp_rate <- factor(JPNPostExpQ$media_exp_rate,ordered=TRUE)
+JPNPostExpQ$social_exp_rate <- factor(JPNPostExpQ$social_exp_rate,ordered=TRUE)
+```
+
+
+```{r language background plot}
+
+fluency_labels <- c("Not at all","A few words and phrases","Not very well","Fairly well","Well","Very well")
+exposure_labels <-c("Less than once per year","Less than once a month","Less than once a week","Less than once a day","Daily")
+
+JPNLangUsePlot <- ggplot(JPNPostExpQ, aes(x=language,fill=use_rate)) +
+  geom_bar() +
+  scale_fill_brewer(na.value="white",name="How well are you able \nto produce this language?",labels=fluency_labels)+
+  labs(x="Language",y="Count")+
+  scale_x_discrete(labels = c('Chinese','English','Japanese'))
+JPNLangUsePlot
+ggsave(filename="Ch5LangUsePlot.png",plot=JPNLangUsePlot,path=here("output"),width=6,height=4,units="in")
+
+JPNLangExpPlot <- ggplot(JPNPostExpQ, aes(x=language,fill=social_exp_rate)) +
+  geom_bar() +
+  scale_fill_brewer(na.value="white",name="How often are you exposed to \nthis language in social settings?",labels=exposure_labels)+
+  labs(x="Language",y="Count")+
+  scale_x_discrete(labels = c('Chinese','English','Japanese'))
+JPNLangExpPlot
+```
+
+```{r effects of condition}
+# combine with condition
+JPNPostExpQ <- merge(JPNPostExpQ, unique(JPNNegProd[,c("participant","condition")]), by="participant")
+
+```
+
+To test whether self-rated proficiency in the ability to speak or produce English had an effect on participants' preference for NegV order, a logistic regression model with NegV order as the dependent variable, self-rated production ability, condition and their interaction as the 
+
+```{r does english fluency affect NegV outcome}
+eng_use_rate <- JPNPostExpQ %>% filter(language=="english")
+EngUseNegProd <- merge(JPNNegProd, eng_use_rate[,c("participant","use_rate")], by="participant")
+
+EngUseNegProd$use_rate <- case_when(
+  EngUseNegProd$use_rate < 4 ~ "lower",
+  EngUseNegProd$use_rate >= 4 ~ "higher")
+EngUseNegProd$use_rate <- factor(EngUseNegProd$use_rate)
+
+EngUseNegProd$condition <- relevel(EngUseNegProd$condition, "Majority NegV")
+eng.m <- glmer(NegVorder~use_rate*condition+(1|participant),data=EngUseNegProd,family="binomial")
+summary(eng.m)
+
+```
+
+Backwards stepwise comparison with buildmer shows that including self-reported ratings of ability to produce English does not improve the fit of the model.
+
+```{r does use_rate improve model, eval=FALSE}
+# this code chunk is currently set not to evaluate on knit to lessen computing time
+# find maximal model that will converge
+max.model <- NegVorder~use_rate*condition+(1|participant)
+compare.m <- buildmer(max.model,data=EngUseNegProd,family="binomial",buildmerControl=buildmerControl(direction='order', args=list(control=lmerControl(optimizer='bobyqa'))))
+# maximal model that will converge:
+# NegVorder ~ 1 + condition + use_rate + condition:use_rate + (1 | participant)
+(max.model <- formula(compare.m@model))
+compare.m <- buildmer(max.model,data=EngUseNegProd,family="binomial",buildmerControl=list(direction='backward', args=list(control=lmerControl(optimizer='bobyqa'))))
+# model with best fit via backwards stepwise comparison:
+# NegVorder ~ 1 + condition + (1 | participant)
+(max.model <- formula(compare.m@model))
+```
+
+```{r plot NegV by self-rating bin}
+EngUseNegProd$condition <- relevel(EngUseNegProd$condition, "Equiprobable")
+EngUse_NegV_participant <- EngUseNegProd %>%
+  group_by(condition,participant,use_rate) %>%
+  summarise(mean_negV = mean(NegVorder, na.rm=TRUE))
+EngUse_NegV_participant$condition <- factor(EngUse_NegV_participant$condition)
+EngUse_NegV_participant$use_rate <- factor(EngUse_NegV_participant$use_rate,ordered=TRUE)
+
+EngUse_NegV <- ggplot(data=EngUse_NegV_participant, aes(x=condition,fill=use_rate))+
+  geom_violin(position=position_dodge(),aes(fill=use_rate,y=mean_negV),alpha=0.5)+
+  geom_dotplot(position="dodge", aes(y=mean_negV), dotsize=0.3, binaxis="y", stackdir="center", alpha=0.5)+
+  labs(x = "Input Condition", y = "Proportion NegV Order",fill="Self-Rated English \nProduction Score") +
+  guides(fill = guide_legend(override.aes = list(shape = NA)))
+EngUse_NegV
+```
+
